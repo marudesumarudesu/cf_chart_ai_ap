@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import logging
-
 import io
-import os
+import logging
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List
 
 import numpy as np
 import pandas as pd
@@ -18,11 +15,7 @@ import yfinance as yf
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 
 
-# A pragmatic set of indices/benchmarks that work well on Yahoo Finance.
-#
-# NOTE:
-# - TOPIX is available on Yahoo Finance as ^TOPX (and on Yahoo Japan as 998405.T).
-#   On some environments, one may work while the other doesn't, so we keep fallbacks.
+# Indices/benchmarks on Yahoo Finance
 INDEX_TICKERS = {
     "日経平均 (Nikkei 225)": "^N225",
     "TOPIX": "^TOPX",
@@ -34,6 +27,8 @@ INDEX_TICKERS = {
     "金 (Gold)": "GC=F",
 }
 
+# Per-index ticker fallbacks (queried in a single batched yfinance call on the app side).
+# Some environments can fetch TOPIX as ^TOPX, others as 998405.T, so we keep fallbacks.
 INDEX_TICKER_CANDIDATES = {
     "TOPIX": ["^TOPX", "998405.T", "1306.T", "1475.T"],
 }
@@ -61,30 +56,20 @@ def _download_bytes(url: str, timeout: int = 25) -> bytes:
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def download_jpx_list() -> pd.DataFrame:
-    """Download and parse the JPX (TSE-listed issues) Excel.
-
-    Source is JPX's published Excel file. It is typically updated monthly.
-    """
+    """Download and parse the JPX (TSE-listed issues) Excel."""
     raw = _download_bytes(JPX_LIST_URL)
     df = pd.read_excel(io.BytesIO(raw), sheet_name=0)
-
-    # Normalize column names (JPX changes can happen; we keep it resilient).
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Expected columns include: 'コード', '銘柄名', '市場・商品区分', '33業種区分', etc.
     if "コード" not in df.columns or "銘柄名" not in df.columns:
         raise ValueError("JPX Excel format changed: required columns not found.")
 
     df["コード"] = df["コード"].astype(str).str.zfill(4)
     df["銘柄名"] = df["銘柄名"].astype(str).str.strip()
 
-    # Most Japanese equities on Yahoo Finance use the Tokyo Stock Exchange suffix '.T'.
     df["yfinance"] = df["コード"] + ".T"
-
-    # A compact label for UI search.
     df["label"] = df["yfinance"] + "  —  " + df["銘柄名"]
 
-    # Sort for nicer UX.
     df = df.sort_values(["コード"]).reset_index(drop=True)
     return df
 
@@ -95,21 +80,14 @@ def fetch_ohlcv(
     period_days: int = 420,
     interval: str = "1d",
 ) -> Dict[str, pd.DataFrame]:
-    """Fetch OHLCV for one or more tickers via yfinance with caching.
-
-    Notes for rate limits:
-      - We fetch via yf.download in a single call for all tickers.
-      - Streamlit cache reduces repeat requests.
-      - Keep tickers count reasonable (UI enforces a soft limit).
-    """
-    tickers = [t.strip() for t in tickers if str(t).strip()]
+    """Fetch OHLCV for tickers via yfinance with caching."""
+    tickers = [str(t).strip() for t in tickers if str(t).strip()]
     if not tickers:
         return {}
 
     period_days = int(np.clip(period_days, 30, 3650))
     period = f"{period_days}d"
 
-    # yfinance is chatty; avoid spamming logs on Streamlit Cloud.
     yf_logger = logging.getLogger("yfinance")
     yf_logger.setLevel(logging.CRITICAL)
 
@@ -129,7 +107,6 @@ def fetch_ohlcv(
         return out
 
     if isinstance(data.columns, pd.MultiIndex):
-        # Multi-ticker case
         for t in tickers:
             if t not in data.columns.get_level_values(0):
                 continue
@@ -138,7 +115,6 @@ def fetch_ohlcv(
             if len(df):
                 out[t] = df
     else:
-        # Single ticker case
         out[tickers[0]] = _sanitize_ohlcv(data.copy())
 
     return out
@@ -146,9 +122,7 @@ def fetch_ohlcv(
 
 def _sanitize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Standardize columns when yfinance changes casing
     df.columns = [str(c).title() for c in df.columns]
-    # Keep common set
     keep = [c for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"] if c in df.columns]
     df = df[keep]
     df = df[~df.index.duplicated(keep="last")]
@@ -174,28 +148,59 @@ def normalize_equal_weight_index(
     price_dict: Dict[str, pd.DataFrame],
     base: float = 100.0,
 ) -> pd.DataFrame:
-    """Build an equal-weight (average) index from multiple tickers."""
+    """Build an equal-weight index (EW) from multiple tickers.
+
+    Fix for mixed calendars (JP + US):
+      - Build union date index (already via concat outer join)
+      - Start from the latest first-valid date across series (so all series exist)
+      - Forward-fill closes on missing dates to avoid broken lines
+    """
     if not price_dict:
         return pd.DataFrame()
 
-    closes = {}
+    closes: Dict[str, pd.Series] = {}
+    first_valids: List[pd.Timestamp] = []
+
     for t, df in price_dict.items():
         if df is None or df.empty or "Close" not in df.columns:
             continue
-        s = df["Close"].astype(float)
-        closes[t] = s
+        s = df["Close"].astype(float).copy()
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        if s.notna().any():
+            fv = s.first_valid_index()
+            if fv is not None:
+                first_valids.append(pd.to_datetime(fv))
+            closes[t] = s
 
-    if not closes:
+    if len(closes) < 2:
         return pd.DataFrame()
 
+    # Union of trading dates across all series
     close_df = pd.concat(closes, axis=1).sort_index()
+
+    # Start where all series have begun (prevents filling "from the future")
+    if first_valids:
+        start = max(first_valids)
+        close_df = close_df.loc[close_df.index >= start]
+
+    # Forward-fill missing closes (calendar mismatch => continuous lines)
+    close_df = close_df.ffill()
+
+    # Drop rows that are still all-NaN (should be rare after start+ffill)
+    close_df = close_df.dropna(how="all")
+    if close_df.empty:
+        return pd.DataFrame()
+
+    # Normalize each series to base
     norm_prices = close_df / close_df.iloc[0] * base
 
+    # Equal-weight index computed from average daily returns
     rets = close_df.pct_change()
     ew_ret = rets.mean(axis=1, skipna=True).fillna(0.0)
     ew_index = (1.0 + ew_ret).cumprod() * base
 
-    out = pd.DataFrame({"EW_INDEX": ew_index})
+    out = pd.DataFrame({"EW_INDEX": ew_index}, index=close_df.index)
+
     for t in norm_prices.columns:
         out[f"{t}_NORM"] = norm_prices[t]
 
