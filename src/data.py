@@ -19,16 +19,25 @@ JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq000
 
 
 # A pragmatic set of indices/benchmarks that work well on Yahoo Finance.
-# Nikkei 225 is available as ^N225 on Yahoo Finance. TOPIX is commonly referenced on Yahoo Japan as 998405.T.
+#
+# NOTE:
+# - TOPIX is available on Yahoo Finance as ^TOPX (and on Yahoo Japan as 998405.T).
+#   On some environments, one may work while the other doesn't, so we keep fallbacks.
 INDEX_TICKERS = {
     "日経平均 (Nikkei 225)": "^N225",
-    "TOPIX": "998405.T",
+    "TOPIX": "^TOPX",
     "米ドル/円": "JPY=X",
     "S&P 500": "^GSPC",
     "NASDAQ 総合": "^IXIC",
     "NYダウ": "^DJI",
     "WTI 原油": "CL=F",
     "金 (Gold)": "GC=F",
+}
+
+# Per-index ticker fallbacks (queried in a single batched yfinance call on the app side).
+INDEX_TICKER_CANDIDATES: Dict[str, List[str]] = {
+    # Prefer ^TOPX, fallback to Yahoo Japan's 998405.T, then liquid TOPIX ETFs as last resort.
+    "TOPIX": ["^TOPX", "998405.T", "1306.T", "1475.T"],
 }
 
 
@@ -167,18 +176,7 @@ def normalize_equal_weight_index(
     price_dict: Dict[str, pd.DataFrame],
     base: float = 100.0,
 ) -> pd.DataFrame:
-    """Build an equal-weight (average) index from multiple tickers.
-
-    Method:
-      - Align by date
-      - Compute daily returns per ticker
-      - Take simple average of returns each day
-      - Cumulate to an index starting at `base`
-
-    Returns a DataFrame:
-      - 'EW_INDEX'
-      - each ticker normalized to `base` for comparison
-    """
+    """Build an equal-weight (average) index from multiple tickers."""
     if not price_dict:
         return pd.DataFrame()
 
@@ -193,11 +191,8 @@ def normalize_equal_weight_index(
         return pd.DataFrame()
 
     close_df = pd.concat(closes, axis=1).sort_index()
-
-    # Normalized price series for comparison
     norm_prices = close_df / close_df.iloc[0] * base
 
-    # Equal-weight index via mean daily returns
     rets = close_df.pct_change()
     ew_ret = rets.mean(axis=1, skipna=True).fillna(0.0)
     ew_index = (1.0 + ew_ret).cumprod() * base
