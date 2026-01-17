@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from typing import Dict, List
-
+import html
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -208,17 +208,21 @@ def _pretty_label(t: str) -> str:
 
 
 selected_pretty = [_pretty_label(t) for t in available_tickers]
+
+chips_html = "".join(
+    [f'<span class="ticker-chip">{html.escape(text)}</span>' for text in selected_pretty]
+)
+
 st.markdown(
-    """
+    f"""
 <div class="ticker-bar">
   <div class="ticker-bar-title">選択中</div>
-  <div class="ticker-chips">{chips}</div>
+  <div class="ticker-chips">{chips_html}</div>
 </div>
-""".format(
-        chips="".join([f"<span class=\\"ticker-chip\\">{text}</span>" for text in selected_pretty])
-    ),
+""",
     unsafe_allow_html=True,
 )
+
 st.caption(
     f"表示は『{int(candles)}本』。指標安定化のため、内部では最大 {int(fetch_days)} 日ぶん取得して必要な範囲だけ描画します。"
 )
