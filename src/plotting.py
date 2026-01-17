@@ -17,7 +17,7 @@ def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
         hovermode="x unified",
         template="plotly_dark",
         dragmode="pan",
-        font=dict(size=13),
+        font=dict(size=14, color="#F8FAFC"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
@@ -28,6 +28,7 @@ def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
         showline=False,
         showgrid=True,
         gridcolor="rgba(148, 163, 184, 0.14)",
+        tickfont=dict(color="rgba(226, 232, 240, 0.92)"),
         zeroline=False,
     )
     fig.update_yaxes(
@@ -37,20 +38,17 @@ def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
         showline=False,
         showgrid=True,
         gridcolor="rgba(148, 163, 184, 0.14)",
+        tickfont=dict(color="rgba(226, 232, 240, 0.92)"),
         zeroline=False,
     )
     return fig
 
 
 def _constrain_xaxis(fig: go.Figure, x_min, x_max) -> go.Figure:
-    """Constrain zoom/pan so the viewport cannot go beyond the data bounds.
-
-    Plotly >= 5.17 supports `minallowed` / `maxallowed` for this.
-    """
+    """Constrain zoom/pan so the viewport cannot go beyond the data bounds."""
     if x_min is None or x_max is None:
         return fig
 
-    # Avoid pandas Timestamp serialization quirks by keeping them as-is.
     fig.update_xaxes(
         range=[x_min, x_max],
         minallowed=x_min,
@@ -96,7 +94,6 @@ def multi_candlestick_subplots(
         )
         fig.update_yaxes(title_text=t, row=i, col=1)
 
-    # Shared x-axis bounds (prevent panning beyond the latest candle)
     x_min = None
     x_max = None
     for t in tickers:
@@ -131,7 +128,6 @@ def focus_chart(
         df = df.iloc[-candles:]
 
     view_index = df.index
-
     n_panels = len(panels)
     rows = 1 + (1 if show_volume else 0) + n_panels
 
@@ -142,7 +138,6 @@ def focus_chart(
     for _ in range(n_panels):
         row_heights.append(max(0.25 / max(1, n_panels), 0.12))
 
-    # Normalize heights to sum=1
     s = sum(row_heights)
     row_heights = [h / s for h in row_heights]
 
@@ -157,7 +152,6 @@ def focus_chart(
         + [p.title for p in panels],
     )
 
-    # --- Price row ---
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -171,13 +165,12 @@ def focus_chart(
         col=1,
     )
 
-    # overlays (SMA/EMA/etc)
     for line in overlays:
-        s = line.series.reindex(view_index)
+        s2 = line.series.reindex(view_index)
         fig.add_trace(
             go.Scatter(
                 x=view_index,
-                y=s.values,
+                y=s2.values,
                 mode="lines",
                 name=line.name,
             ),
@@ -185,7 +178,6 @@ def focus_chart(
             col=1,
         )
 
-    # --- Volume row ---
     next_row = 2
     if show_volume and "Volume" in df.columns:
         fig.add_trace(
@@ -201,19 +193,18 @@ def focus_chart(
         fig.update_yaxes(title_text="Vol", row=next_row, col=1)
         next_row += 1
 
-    # --- Indicator panels ---
     for p in panels:
         for line in p.lines:
-            s = line.series.reindex(view_index)
+            s2 = line.series.reindex(view_index)
             if line.kind == "bar":
                 fig.add_trace(
-                    go.Bar(x=view_index, y=s.values, name=line.name),
+                    go.Bar(x=view_index, y=s2.values, name=line.name),
                     row=next_row,
                     col=1,
                 )
             else:
                 fig.add_trace(
-                    go.Scatter(x=view_index, y=s.values, mode="lines", name=line.name),
+                    go.Scatter(x=view_index, y=s2.values, mode="lines", name=line.name),
                     row=next_row,
                     col=1,
                 )
@@ -239,7 +230,6 @@ def equal_weight_index_chart(index_df: pd.DataFrame, tickers: List[str]) -> go.F
 
     fig.add_trace(go.Scatter(x=index_df.index, y=index_df["EW_INDEX"], mode="lines", name="EW_INDEX"))
 
-    # Show up to 6 underlying normalized series (too many makes it unreadable)
     shown = 0
     for t in tickers:
         col = f"{t}_NORM"
