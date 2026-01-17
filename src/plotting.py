@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import ceil
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -12,7 +13,7 @@ from src.indicators import IndicatorLine, IndicatorPanel
 def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
     fig.update_layout(
         title=title,
-        margin=dict(l=20, r=20, t=55, b=20),
+        margin=dict(l=18, r=18, t=55, b=18),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         hovermode="x unified",
         template="plotly_dark",
@@ -25,17 +26,16 @@ def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
         showspikes=True,
         spikemode="across",
         spikesnap="cursor",
-        showline=False,
         showgrid=True,
         gridcolor="rgba(148, 163, 184, 0.14)",
         tickfont=dict(color="rgba(226, 232, 240, 0.92)"),
         zeroline=False,
+        rangeslider_visible=False,
     )
     fig.update_yaxes(
         showspikes=True,
         spikemode="across",
         spikesnap="cursor",
-        showline=False,
         showgrid=True,
         gridcolor="rgba(148, 163, 184, 0.14)",
         tickfont=dict(color="rgba(226, 232, 240, 0.92)"),
@@ -44,11 +44,10 @@ def _base_layout(fig: go.Figure, title: str = "") -> go.Figure:
     return fig
 
 
-def _constrain_xaxis(fig: go.Figure, x_min, x_max) -> go.Figure:
-    """Constrain zoom/pan so the viewport cannot go beyond the data bounds."""
+def _constrain_all_xaxes(fig: go.Figure, x_min, x_max) -> go.Figure:
+    """Constrain zoom/pan so viewport cannot go beyond data bounds (all x-axes)."""
     if x_min is None or x_max is None:
         return fig
-
     fig.update_xaxes(
         range=[x_min, x_max],
         minallowed=x_min,
@@ -62,22 +61,42 @@ def multi_candlestick_subplots(
     price_dict: Dict[str, pd.DataFrame],
     tickers: List[str],
     candles: int = 90,
+    n_cols: int = 1,
 ) -> go.Figure:
+    """Multi-ticker candlestick in a grid layout (1-4 columns)."""
     tickers = [t for t in tickers if t in price_dict]
-    rows = max(1, len(tickers))
+    if not tickers:
+        return _base_layout(go.Figure(), title="マルチ銘柄ローソク足")
+
+    n_cols = int(max(1, min(4, n_cols)))
+    n_rows = int(ceil(len(tickers) / n_cols))
 
     fig = make_subplots(
-        rows=rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[1.0 / rows] * rows,
+        rows=n_rows,
+        cols=n_cols,
+        shared_xaxes=False,
+        vertical_spacing=0.06,
+        horizontal_spacing=0.06,
+        subplot_titles=tickers,
     )
 
-    for i, t in enumerate(tickers, start=1):
+    # Compute overall x-range from the displayed window only
+    x_min = None
+    x_max = None
+
+    for idx, t in enumerate(tickers):
+        r = idx // n_cols + 1
+        c = idx % n_cols + 1
+
         df = price_dict[t].copy()
         if len(df) > candles:
             df = df.iloc[-candles:]
+
+        if not df.empty:
+            mn = df.index.min()
+            mx = df.index.max()
+            x_min = mn if x_min is None else min(x_min, mn)
+            x_max = mx if x_max is None else max(x_max, mx)
 
         fig.add_trace(
             go.Candlestick(
@@ -89,29 +108,15 @@ def multi_candlestick_subplots(
                 name=t,
                 showlegend=False,
             ),
-            row=i,
-            col=1,
+            row=r,
+            col=c,
         )
-        fig.update_yaxes(title_text=t, row=i, col=1)
 
-    x_min = None
-    x_max = None
-    for t in tickers:
-        df = price_dict[t]
-        if df is None or df.empty:
-            continue
-        view = df.iloc[-candles:] if len(df) > candles else df
-        if view.empty:
-            continue
-        mn = view.index.min()
-        mx = view.index.max()
-        x_min = mn if x_min is None else min(x_min, mn)
-        x_max = mx if x_max is None else max(x_max, mx)
-
-    fig.update_layout(height=max(450, 220 * rows))
-    fig = _base_layout(fig, title="マルチ銘柄ローソク足")
+    height = max(520, 320 * n_rows)
+    fig.update_layout(height=height)
+    fig = _base_layout(fig, title="マルチ銘柄ローソク足（グリッド）")
     fig.update_layout(uirevision="|".join(tickers))
-    fig = _constrain_xaxis(fig, x_min, x_max)
+    fig = _constrain_all_xaxes(fig, x_min, x_max)
     return fig
 
 
@@ -190,7 +195,6 @@ def focus_chart(
             row=next_row,
             col=1,
         )
-        fig.update_yaxes(title_text="Vol", row=next_row, col=1)
         next_row += 1
 
     for p in panels:
@@ -218,29 +222,73 @@ def focus_chart(
     fig.update_layout(height=max(650, 220 * rows))
     fig = _base_layout(fig, title=f"{ticker} — 詳細チャート")
     fig.update_layout(uirevision=ticker)
-    fig = _constrain_xaxis(fig, view_index.min(), view_index.max())
+    fig = _constrain_all_xaxes(fig, view_index.min(), view_index.max())
     return fig
 
 
-def equal_weight_index_chart(index_df: pd.DataFrame, tickers: List[str]) -> go.Figure:
+def equal_weight_index_chart(
+    index_df: pd.DataFrame,
+    stock_tickers: List[str],
+    index_tickers: List[str],
+    ticker_label: Optional[Dict[str, str]] = None,
+) -> go.Figure:
+    """EW index chart with clear line distinctions:
+       - EW_INDEX: thick solid
+       - Indices: medium dotted
+       - Individual stocks: thin + low opacity
+    """
     fig = go.Figure()
+    ticker_label = ticker_label or {}
 
     if index_df is None or index_df.empty:
         return _base_layout(fig, title="平均インデックス")
 
-    fig.add_trace(go.Scatter(x=index_df.index, y=index_df["EW_INDEX"], mode="lines", name="EW_INDEX"))
+    # EW index (dominant)
+    if "EW_INDEX" in index_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=index_df.index,
+                y=index_df["EW_INDEX"],
+                mode="lines",
+                name="平均インデックス（EW）",
+                line=dict(width=4),
+            )
+        )
 
-    shown = 0
-    for t in tickers:
+    # Indices (clear but secondary)
+    for t in index_tickers:
         col = f"{t}_NORM"
-        if col in index_df.columns:
-            fig.add_trace(go.Scatter(x=index_df.index, y=index_df[col], mode="lines", name=t, opacity=0.55))
-            shown += 1
-        if shown >= 6:
-            break
+        if col not in index_df.columns:
+            continue
+        name = ticker_label.get(t, t)
+        fig.add_trace(
+            go.Scatter(
+                x=index_df.index,
+                y=index_df[col],
+                mode="lines",
+                name=f"指数：{name}",
+                line=dict(width=2.6, dash="dot"),
+                opacity=0.95,
+            )
+        )
 
-    fig = _base_layout(fig, title="選択銘柄から作る『平均インデックス』")
-    fig.update_layout(height=520, uirevision="ew-index")
-    if not index_df.empty:
-        fig = _constrain_xaxis(fig, index_df.index.min(), index_df.index.max())
-    return fig
+    # Individual stocks (background context)
+    for t in stock_tickers:
+        col = f"{t}_NORM"
+        if col not in index_df.columns:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=index_df.index,
+                y=index_df[col],
+                mode="lines",
+                name=t,
+                line=dict(width=1.2),
+                opacity=0.30,
+                showlegend=False,  # avoid legend clutter; hover still shows series
+            )
+        )
+
+    fig = _base_layout(fig, title="平均インデックス（100基準）")
+    fig.update_layout(height=560, uirevision="ew-index")
+    fig = _constrain_all_xaxes(fig, index_df.i
