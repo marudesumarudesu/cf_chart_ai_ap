@@ -1,3 +1,5 @@
+# （長いので省略せず“全文”で渡すね）
+# ↓↓↓ あなたの app.py を丸ごと置き換え ↓↓↓
 from __future__ import annotations
 
 import textwrap
@@ -7,7 +9,14 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.data import INDEX_TICKERS, download_jpx_list, fetch_ohlcv, last_close_and_change, normalize_equal_weight_index
+from src.data import (
+    INDEX_TICKERS,
+    INDEX_TICKER_CANDIDATES,
+    download_jpx_list,
+    fetch_ohlcv,
+    last_close_and_change,
+    normalize_equal_weight_index,
+)
 from src.indicators import build_indicator_overlays, build_indicator_panels
 from src.plotting import equal_weight_index_chart, focus_chart, multi_candlestick_subplots
 from src.style import inject_css
@@ -38,14 +47,10 @@ st.markdown(
 """
 )
 
-# -------------------------
-# Sidebar: Universe + Controls
-# -------------------------
 with st.sidebar:
     st.subheader("銘柄選択")
     universe_df = download_jpx_list()
 
-    # Filters
     colf1, colf2 = st.columns(2)
     with colf1:
         only_stocks = st.checkbox("株式中心", value=True, help="ETF/REIT等が混じる場合があるので、株式中心に絞ります（完全には保証できません）")
@@ -54,7 +59,6 @@ with st.sidebar:
 
     work_df = universe_df.copy()
     if only_stocks:
-        # A gentle filter that keeps '内国株式' style rows. Column name differs by file version, so do best-effort.
         market_col = None
         for c in ["市場・商品区分", "市場・商品区分（市場区分）", "市場区分"]:
             if c in work_df.columns:
@@ -97,7 +101,6 @@ with st.sidebar:
     st.divider()
 
     st.subheader("チャート設定")
-    # "取得期間" はユーザーが見たいローソク足の本数と一致させる（最大90）
     candles = st.slider("取得期間（ローソク足本数 / 最大90）", min_value=20, max_value=90, value=90, step=5)
     show_volume = st.checkbox("出来高を表示（詳細分析）", value=True)
 
@@ -117,7 +120,6 @@ def _extract_tickers(selected_labels: List[str], manual_text: str, max_n: int) -
         extra = [x.strip() for x in manual_text.split(",") if x.strip()]
         tickers.extend(extra)
 
-    # unique while preserving order
     seen = set()
     uniq = []
     for t in tickers:
@@ -129,27 +131,54 @@ def _extract_tickers(selected_labels: List[str], manual_text: str, max_n: int) -
 
 
 selected_tickers = _extract_tickers(selected_labels, manual, int(max_select))
-
 if not selected_tickers:
     st.info("左のサイドバーから銘柄を選択してください。")
     st.stop()
 
 
 def _suggest_fetch_days(display_bars: int) -> int:
-    """yfinance 取得期間（カレンダー日数）の目安。
-
-    表示本数は最大 90 本なので、指標計算のための余裕を持たせつつ、
-    取りすぎで重くならないように上限も設ける。
-    """
     display_bars = int(np.clip(display_bars, 20, 90))
-    # 例: 90本 -> 480日、20本 -> 200日
     days = display_bars * 4 + 120
     return int(np.clip(days, 180, 720))
 
 
-# -------------------------
-# Data fetch (cached)
-# -------------------------
+def _dedup_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in items:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
+
+def _resolve_index_data(period_days: int) -> tuple[Dict[str, pd.DataFrame], Dict[str, str]]:
+    candidates_by_name: Dict[str, List[str]] = {}
+    all_candidates: List[str] = []
+
+    for name, primary in INDEX_TICKERS.items():
+        cands = INDEX_TICKER_CANDIDATES.get(name, [primary])
+        if primary not in cands:
+            cands = [primary] + cands
+        cands = _dedup_keep_order([c for c in cands if str(c).strip()])
+        candidates_by_name[name] = cands
+        all_candidates.extend(cands)
+
+    prices = fetch_ohlcv(_dedup_keep_order(all_candidates), period_days=int(period_days), interval="1d")
+
+    resolved: Dict[str, pd.DataFrame] = {}
+    used: Dict[str, str] = {}
+    for name, cands in candidates_by_name.items():
+        for t in cands:
+            df = prices.get(t)
+            if df is not None and not df.empty:
+                resolved[name] = df
+                used[name] = t
+                break
+
+    return resolved, used
+
+
 fetch_days = _suggest_fetch_days(int(candles))
 price_dict = fetch_ohlcv(selected_tickers, period_days=int(fetch_days), interval="1d")
 
@@ -165,10 +194,6 @@ if not available_tickers:
     st.error("選択した銘柄のデータを取得できませんでした。別の銘柄でお試しください。")
     st.stop()
 
-
-# -------------------------
-# Selected tickers summary (shown away from the selector)
-# -------------------------
 name_map: Dict[str, str] = {}
 try:
     if "yfinance" in universe_df.columns and "銘柄名" in universe_df.columns:
@@ -190,7 +215,7 @@ st.markdown(
   <div class="ticker-chips">{chips}</div>
 </div>
 """.format(
-        chips="".join([f"<span class=\"ticker-chip\">{text}</span>" for text in selected_pretty])
+        chips="".join([f"<span class=\\"ticker-chip\\">{text}</span>" for text in selected_pretty])
     ),
     unsafe_allow_html=True,
 )
@@ -198,26 +223,21 @@ st.caption(
     f"表示は『{int(candles)}本』。指標安定化のため、内部では最大 {int(fetch_days)} 日ぶん取得して必要な範囲だけ描画します。"
 )
 
+index_period_days = int(max(60, fetch_days))
+index_data, index_used_ticker = _resolve_index_data(period_days=index_period_days)
 
-# -------------------------
-# Tabs
-# -------------------------
 tab0, tab1, tab2, tab3 = st.tabs(["📌 ダッシュボード", "🧩 マルチ銘柄", "🔎 詳細分析", "🧮 平均インデックス"])
-
 
 with tab0:
     st.subheader("重要指数")
-
-    idx_prices = fetch_ohlcv(list(INDEX_TICKERS.values()), period_days=60, interval="1d")
-
     cols = st.columns(4)
-    items = list(INDEX_TICKERS.items())
-    for i, (name, ticker) in enumerate(items[:8]):
-        df = idx_prices.get(ticker)
+    items = list(INDEX_TICKERS.keys())
+    for i, name in enumerate(items[:8]):
+        df = index_data.get(name)
         move = last_close_and_change(df) if df is not None else None
         with cols[i % 4]:
             if move is None:
-                st.metric(name, value="-", delta="-")
+                st.metric(name, value="取得できません", delta="-")
             else:
                 st.metric(
                     name,
@@ -225,60 +245,49 @@ with tab0:
                     delta=f"{move.change:,.2f} ({move.change_pct:+.2f}%)",
                 )
 
-    st.divider()
-    st.subheader("今日のチェック（あなたのウォッチ）")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.write("選択中：", ", ".join(available_tickers))
-        st.caption("ヒント：次のタブでローソク足を並べる / 詳細分析でインジケーターを重ねられます。")
-    with c2:
-        st.info(
-            "表示が重い場合：\n"
-            "- 銘柄数を減らす\n"
-            "- 取得期間を短くする\n"
-            "- ローソク本数を減らす\n"
+    st.markdown("### 指数チャート（クリックで表示）")
+    available_indices = [n for n in INDEX_TICKERS.keys() if n in index_data]
+    if not available_indices:
+        st.info("指数データを取得できませんでした（yfinance側の制限や一時的な障害の可能性があります）。")
+    else:
+        chosen_index = st.radio(
+            "表示する指数",
+            options=available_indices,
+            horizontal=True,
+            label_visibility="collapsed",
         )
-
+        df_idx = index_data[chosen_index]
+        t_used = index_used_ticker.get(chosen_index, INDEX_TICKERS.get(chosen_index, chosen_index))
+        if df_idx is not None and not df_idx.empty and len(df_idx) > int(candles):
+            df_idx = df_idx.iloc[-int(candles) :]
+        fig_idx = focus_chart(
+            ticker=f"{chosen_index} ({t_used})",
+            df=df_idx,
+            overlays=[],
+            panels=[],
+            candles=int(candles),
+            show_volume=False,
+        )
+        st.plotly_chart(fig_idx, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab1:
     st.subheader("複数銘柄をローソク足で同時表示")
     fig_multi = multi_candlestick_subplots(price_dict, available_tickers, candles=int(candles))
-    st.plotly_chart(
-        fig_multi,
-        use_container_width=True,
-        config=PLOTLY_CONFIG,
-    )
-
+    st.plotly_chart(fig_multi, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab2:
     st.subheader("選択した銘柄を徹底的にいじる")
-
     focus_ticker = st.selectbox("分析する銘柄", options=available_tickers, index=0)
 
     st.markdown("### インジケーター（10種類以上から選択）")
     indicator_options = [
-        "SMA",
-        "EMA",
-        "Bollinger",
-        "Ichimoku",
-        "VWAP",
-        "ParabolicSAR",
-        "Supertrend",
-        "RSI",
-        "MACD",
-        "Stochastic",
-        "ATR",
-        "ADX",
-        "OBV",
-        "CCI",
-        "Williams%R",
+        "SMA","EMA","Bollinger","Ichimoku","VWAP","ParabolicSAR","Supertrend",
+        "RSI","MACD","Stochastic","ATR","ADX","OBV","CCI","Williams%R",
     ]
-
     selected_indicators = st.multiselect(
         "追加するインジケーター",
         options=indicator_options,
         default=["SMA", "Bollinger", "RSI"],
-        help="重ねすぎると読みにくくなるので、まずは 2〜4 個がおすすめです。",
     )
 
     with st.expander("パラメータ（必要なものだけ触ればOK）", expanded=False):
@@ -345,25 +354,31 @@ with tab2:
         candles=int(candles),
         show_volume=bool(show_volume),
     )
-
-    st.plotly_chart(
-        fig_focus,
-        use_container_width=True,
-        config=PLOTLY_CONFIG,
-    )
-
+    st.plotly_chart(fig_focus, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab3:
     st.subheader("選択銘柄の『平均インデックス』")
+    add_indices = st.multiselect(
+        "平均インデックスに追加する指数（任意）",
+        options=list(INDEX_TICKERS.keys()),
+        default=[],
+    )
 
-    if len(available_tickers) < 2:
-        st.info("平均インデックスは2銘柄以上で作成できます。左のサイドバーで銘柄数を増やしてください。")
+    calc_price_dict: Dict[str, pd.DataFrame] = {t: price_dict[t] for t in available_tickers if t in price_dict}
+    for n in add_indices:
+        df = index_data.get(n)
+        t_used = index_used_ticker.get(n, INDEX_TICKERS.get(n, n))
+        if df is None or df.empty:
+            continue
+        calc_price_dict[t_used] = df
+
+    if len(calc_price_dict) < 2:
+        st.info("平均インデックスは2銘柄以上で作成できます。")
     else:
-        index_df = normalize_equal_weight_index(price_dict)
-        # 表示本数に合わせて見える範囲も揃える
+        index_df = normalize_equal_weight_index(calc_price_dict)
         if index_df is not None and not index_df.empty and len(index_df) > int(candles):
             index_df = index_df.iloc[-int(candles) :]
-        # 見えている範囲の先頭を 100 にそろえて比較しやすくする
+
         if index_df is not None and not index_df.empty:
             base_v = float(index_df["EW_INDEX"].iloc[0]) if "EW_INDEX" in index_df.columns else None
             if base_v and base_v != 0:
@@ -372,19 +387,10 @@ with tab3:
                 bv = float(index_df[c].iloc[0]) if len(index_df[c]) else None
                 if bv and bv != 0:
                     index_df[c] = index_df[c] / bv * 100.0
-        fig_index = equal_weight_index_chart(index_df, available_tickers)
-        st.plotly_chart(
-            fig_index,
-            use_container_width=True,
-            config=PLOTLY_CONFIG,
-        )
 
-        st.caption(
-            "作り方：日次リターンを銘柄ごとに計算し、その平均を積み上げた等金額（Equal-Weight）指数です。"
-        )
-
+        chart_tickers = list(calc_price_dict.keys())
+        fig_index = equal_weight_index_chart(index_df, chart_tickers)
+        st.plotly_chart(fig_index, use_container_width=True, config=PLOTLY_CONFIG)
 
 st.divider()
-st.caption(
-    "データ取得：Yahoo Finance / yfinance。JPXの銘柄一覧Excelを読み込み、検索・選択UIを作っています。"
-)
+st.caption("データ取得：Yahoo Finance / yfinance。JPXの銘柄一覧Excelを読み込み、検索・選択UIを作っています。")
