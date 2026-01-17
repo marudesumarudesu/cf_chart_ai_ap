@@ -100,7 +100,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("チャート設定")
-    candles = st.slider("取得期間（ローソク足本数 / 最大90）", min_value=20, max_value=90, value=90, step=5)
+    candles = st.slider("取得期間（ローソク足本数 / 最大480）", min_value=20, max_value=480, value=480, step=5)
     show_volume = st.checkbox("出来高を表示（詳細分析）", value=True)
 
     st.caption("API制限対策：取得結果はキャッシュされます。銘柄数を増やしすぎると取得が遅くなる場合があります。")
