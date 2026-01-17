@@ -34,9 +34,7 @@ INDEX_TICKERS = {
     "金 (Gold)": "GC=F",
 }
 
-# Per-index ticker fallbacks (queried in a single batched yfinance call on the app side).
-INDEX_TICKER_CANDIDATES: Dict[str, List[str]] = {
-    # Prefer ^TOPX, fallback to Yahoo Japan's 998405.T, then liquid TOPIX ETFs as last resort.
+INDEX_TICKER_CANDIDATES = {
     "TOPIX": ["^TOPX", "998405.T", "1306.T", "1475.T"],
 }
 
