@@ -291,4 +291,5 @@ def equal_weight_index_chart(
 
     fig = _base_layout(fig, title="平均インデックス（100基準）")
     fig.update_layout(height=560, uirevision="ew-index")
-    fig = _constrain_all_xaxes(fig, index_df.i
+    fig = _constrain_all_xaxes(fig, index_df.index.min(), index_df.index.max())
+    return fig                              
