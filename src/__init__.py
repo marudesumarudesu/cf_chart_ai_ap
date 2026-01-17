@@ -1,1 +1,0 @@
-"""JP Stock Dashboard package."""
