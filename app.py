@@ -1,10 +1,8 @@
-# （長いので省略せず“全文”で渡すね）
-# ↓↓↓ あなたの app.py を丸ごと置き換え ↓↓↓
 from __future__ import annotations
 
-import textwrap
-from typing import Dict, List
 import html
+from typing import Dict, List
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -29,7 +27,6 @@ PLOTLY_CONFIG = {
     "displayModeBar": True,
 }
 
-
 st.set_page_config(
     page_title="JP Market Canvas",
     page_icon="📈",
@@ -53,7 +50,10 @@ with st.sidebar:
 
     colf1, colf2 = st.columns(2)
     with colf1:
-        only_stocks = st.checkbox("株式中心", value=True, help="ETF/REIT等が混じる場合があるので、株式中心に絞ります（完全には保証できません）")
+        only_stocks = st.checkbox(
+            "株式中心", value=True,
+            help="ETF/REIT等が混じる場合があるので、株式中心に絞ります（完全には保証できません）"
+        )
     with colf2:
         max_select = st.number_input("最大選択数", min_value=1, max_value=30, value=12, step=1)
 
@@ -89,24 +89,21 @@ with st.sidebar:
         "表示する銘柄（複数選択OK）",
         options=options,
         default=default_labels,
-        help="ここは検索できます。多すぎると表示が重くなるので、まずは 3〜8 銘柄がおすすめです。",
+        help="まずは 3〜8 銘柄が快適です（増やすほど重くなります）。",
     )
 
     manual = st.text_input(
         "手動で追加（yfinanceティッカーをカンマ区切り）",
         value="",
-        help="例：998407.O, 9432.T, 6501.T, ^N225 など",
+        help="例：9432.T, 6501.T, ^N225 など",
     )
 
     st.divider()
-
     st.subheader("チャート設定")
     candles = st.slider("取得期間（ローソク足本数 / 最大90）", min_value=20, max_value=90, value=90, step=5)
     show_volume = st.checkbox("出来高を表示（詳細分析）", value=True)
 
-    st.caption(
-        "API制限対策：取得結果はキャッシュされます。銘柄数を増やしすぎると取得が遅くなる場合があります。"
-    )
+    st.caption("API制限対策：取得結果はキャッシュされます。銘柄数を増やしすぎると取得が遅くなる場合があります。")
 
 
 def _extract_tickers(selected_labels: List[str], manual_text: str, max_n: int) -> List[str]:
@@ -138,6 +135,7 @@ if not selected_tickers:
 
 def _suggest_fetch_days(display_bars: int) -> int:
     display_bars = int(np.clip(display_bars, 20, 90))
+    # indicator stability buffer
     days = display_bars * 4 + 120
     return int(np.clip(days, 180, 720))
 
@@ -208,10 +206,7 @@ def _pretty_label(t: str) -> str:
 
 
 selected_pretty = [_pretty_label(t) for t in available_tickers]
-
-chips_html = "".join(
-    [f'<span class="ticker-chip">{html.escape(text)}</span>' for text in selected_pretty]
-)
+chips_html = "".join([f'<span class="ticker-chip">{html.escape(text)}</span>' for text in selected_pretty])
 
 st.markdown(
     f"""
@@ -222,7 +217,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
 st.caption(
     f"表示は『{int(candles)}本』。指標安定化のため、内部では最大 {int(fetch_days)} 日ぶん取得して必要な範囲だけ描画します。"
 )
@@ -236,6 +230,7 @@ with tab0:
     st.subheader("重要指数")
     cols = st.columns(4)
     items = list(INDEX_TICKERS.keys())
+
     for i, name in enumerate(items[:8]):
         df = index_data.get(name)
         move = last_close_and_change(df) if df is not None else None
@@ -249,7 +244,7 @@ with tab0:
                     delta=f"{move.change:,.2f} ({move.change_pct:+.2f}%)",
                 )
 
-    st.markdown("### 指数チャート（クリックで表示）")
+    st.markdown("### 指数チャート（選択して表示）")
     available_indices = [n for n in INDEX_TICKERS.keys() if n in index_data]
     if not available_indices:
         st.info("指数データを取得できませんでした（yfinance側の制限や一時的な障害の可能性があります）。")
@@ -263,7 +258,7 @@ with tab0:
         df_idx = index_data[chosen_index]
         t_used = index_used_ticker.get(chosen_index, INDEX_TICKERS.get(chosen_index, chosen_index))
         if df_idx is not None and not df_idx.empty and len(df_idx) > int(candles):
-            df_idx = df_idx.iloc[-int(candles) :]
+            df_idx = df_idx.iloc[-int(candles):]
         fig_idx = focus_chart(
             ticker=f"{chosen_index} ({t_used})",
             df=df_idx,
@@ -275,8 +270,14 @@ with tab0:
         st.plotly_chart(fig_idx, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab1:
-    st.subheader("複数銘柄をローソク足で同時表示")
-    fig_multi = multi_candlestick_subplots(price_dict, available_tickers, candles=int(candles))
+    st.subheader("複数銘柄をローソク足で同時表示（グリッド）")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        n_cols = st.slider("列数（1〜4）", min_value=1, max_value=4, value=2, step=1)
+    with c2:
+        st.caption("列数を増やすほど一覧性が上がります（その分、1枚あたりは小さく見えます）。")
+
+    fig_multi = multi_candlestick_subplots(price_dict, available_tickers, candles=int(candles), n_cols=int(n_cols))
     st.plotly_chart(fig_multi, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab2:
@@ -285,8 +286,8 @@ with tab2:
 
     st.markdown("### インジケーター（10種類以上から選択）")
     indicator_options = [
-        "SMA","EMA","Bollinger","Ichimoku","VWAP","ParabolicSAR","Supertrend",
-        "RSI","MACD","Stochastic","ATR","ADX","OBV","CCI","Williams%R",
+        "SMA", "EMA", "Bollinger", "Ichimoku", "VWAP", "ParabolicSAR", "Supertrend",
+        "RSI", "MACD", "Stochastic", "ATR", "ADX", "OBV", "CCI", "Williams%R",
     ]
     selected_indicators = st.multiselect(
         "追加するインジケーター",
@@ -361,39 +362,54 @@ with tab2:
     st.plotly_chart(fig_focus, use_container_width=True, config=PLOTLY_CONFIG)
 
 with tab3:
-    st.subheader("選択銘柄の『平均インデックス』")
+    st.subheader("選択銘柄の『平均インデックス（100基準）』")
+
     add_indices = st.multiselect(
         "平均インデックスに追加する指数（任意）",
         options=list(INDEX_TICKERS.keys()),
         default=[],
+        help="日米混在でも線が途切れないように、営業日ズレは補正します（休場日は横ばいになります）。",
     )
 
     calc_price_dict: Dict[str, pd.DataFrame] = {t: price_dict[t] for t in available_tickers if t in price_dict}
+
+    index_used: List[str] = []
+    index_label: Dict[str, str] = {}
+
     for n in add_indices:
         df = index_data.get(n)
         t_used = index_used_ticker.get(n, INDEX_TICKERS.get(n, n))
         if df is None or df.empty:
             continue
         calc_price_dict[t_used] = df
+        index_used.append(t_used)
+        index_label[t_used] = n
 
     if len(calc_price_dict) < 2:
         st.info("平均インデックスは2銘柄以上で作成できます。")
     else:
         index_df = normalize_equal_weight_index(calc_price_dict)
+
+        # Display window
         if index_df is not None and not index_df.empty and len(index_df) > int(candles):
-            index_df = index_df.iloc[-int(candles) :]
+            index_df = index_df.iloc[-int(candles):]
 
+        # Normalize to 100 at start for all series
         if index_df is not None and not index_df.empty:
-            base_v = float(index_df["EW_INDEX"].iloc[0]) if "EW_INDEX" in index_df.columns else None
-            if base_v and base_v != 0:
-                index_df["EW_INDEX"] = index_df["EW_INDEX"] / base_v * 100.0
-            for c in [c for c in index_df.columns if c.endswith("_NORM")]:
-                bv = float(index_df[c].iloc[0]) if len(index_df[c]) else None
-                if bv and bv != 0:
-                    index_df[c] = index_df[c] / bv * 100.0
+            if "EW_INDEX" in index_df.columns and index_df["EW_INDEX"].iloc[0] != 0:
+                index_df["EW_INDEX"] = index_df["EW_INDEX"] / float(index_df["EW_INDEX"].iloc[0]) * 100.0
 
-        chart_tickers = list(calc_price_dict.keys())
-        fig_index = equal_weight_index_chart(index_df, chart_tickers)
+            for c in [c for c in index_df.columns if c.endswith("_NORM")]:
+                v0 = float(index_df[c].iloc[0]) if len(index_df[c]) else None
+                if v0 and v0 != 0:
+                    index_df[c] = index_df[c] / v0 * 100.0
+
+        fig_index = equal_weight_index_chart(
+            index_df=index_df,
+            stock_tickers=available_tickers,
+            index_tickers=index_used,
+            ticker_label=index_label,
+        )
         st.plotly_chart(fig_index, use_container_width=True, config=PLOTLY_CONFIG)
 
 st.divider()
